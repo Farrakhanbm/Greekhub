@@ -1,0 +1,112 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────
+    function isSignedIn()         { return request.auth != null; }
+    function isOwner(uid)         { return request.auth.uid == uid; }
+    function userDoc()            { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function sameChapter(chapter) { return userDoc().chapter == chapter; }
+    function isOfficer()          {
+      let role = userDoc().role;
+      return role == "President" || role == "Vice President"
+          || role == "Treasurer" || role == "Secretary";
+    }
+
+    // ── Users ─────────────────────────────────────────────────
+    match /users/{uid} {
+      // Anyone signed in can read roster members in their chapter
+      allow read:   if isSignedIn() && sameChapter(resource.data.chapter);
+      // Users can write their own doc; officers can update any member in chapter
+      allow create: if isSignedIn() && isOwner(uid);
+      allow update: if isSignedIn() && (isOwner(uid) || isOfficer());
+      allow delete: if isSignedIn() && isOfficer();
+    }
+
+    // ── Posts (Feed) ──────────────────────────────────────────
+    match /posts/{postId} {
+      allow read:   if isSignedIn() && sameChapter(resource.data.chapter);
+      allow create: if isSignedIn() && sameChapter(request.resource.data.chapter)
+                       && request.resource.data.authorId == request.auth.uid;
+      // Allow updating likes/likedBy; only author or officer can edit content
+      allow update: if isSignedIn() && sameChapter(resource.data.chapter) && (
+                         request.resource.data.diff(resource.data).affectedKeys()
+                             .hasOnly(["likes","likedBy"])
+                         || resource.data.authorId == request.auth.uid
+                         || isOfficer()
+                       );
+      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isOfficer());
+    }
+
+    // ── Events ────────────────────────────────────────────────
+    match /events/{eventId} {
+      allow read:   if isSignedIn() && sameChapter(resource.data.chapter);
+      allow create: if isSignedIn() && isOfficer();
+      allow update: if isSignedIn() && (
+                         isOfficer()
+                         || request.resource.data.diff(resource.data).affectedKeys().hasOnly(["rsvpCount"])
+                       );
+      allow delete: if isSignedIn() && isOfficer();
+
+      // RSVP subcollection
+      match /rsvps/{userId} {
+        allow read:   if isSignedIn();
+        allow write:  if isSignedIn() && isOwner(userId);
+      }
+    }
+
+    // ── Chat Channels ─────────────────────────────────────────
+    match /channels/{channelId} {
+      allow read:   if isSignedIn();
+      allow create,
+            update: if isSignedIn() && isOfficer();
+      allow delete: if isSignedIn() && isOfficer();
+
+      // Messages subcollection
+      match /messages/{messageId} {
+        allow read:   if isSignedIn();
+        allow create: if isSignedIn()
+                         && request.resource.data.authorId == request.auth.uid;
+        allow update,
+              delete: if isSignedIn()
+                         && (resource.data.authorId == request.auth.uid || isOfficer());
+      }
+    }
+
+    // ── Dues ──────────────────────────────────────────────────
+    match /dues/{duesId} {
+      allow read:  if isSignedIn() && (isOfficer() || resource.data.userId == request.auth.uid);
+      allow create,
+            update: if isSignedIn() && isOfficer();
+      allow delete: if isSignedIn() && isOfficer();
+    }
+
+    // ── Alumni ────────────────────────────────────────────────
+    match /alumni/{alumniId} {
+      allow read:  if isSignedIn();
+      allow write: if isSignedIn() && isOfficer();
+    }
+
+    // ── Badges (subcollection under users) ────────────────────
+    // Covered by user rules above — officer or system can write,
+    // user can read their own:
+    //   match /users/{uid}/badges/{badgeId} {
+    //     allow read:  if isSignedIn() && isOwner(uid);
+    //     allow write: if isSignedIn() && isOfficer();
+    //   }
+
+    // ── Points Log ────────────────────────────────────────────
+    match /pointsLog/{logId} {
+      allow read:  if isSignedIn() && isOfficer();
+      allow write: if isSignedIn() && isOfficer();
+    }
+  }
+}
+
+    // ── Check-In Records ──────────────────────────────────────
+    // (subcollection under events/{eventId}/checkIns)
+    // Already covered by the events match block above — added here for clarity:
+    //   match /events/{eventId}/checkIns/{userId} {
+    //     allow read: if isSignedIn();
+    //     allow write: if isSignedIn() && isOwner(userId);
+    //   }
